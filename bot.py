@@ -51,8 +51,7 @@ SKIP = "➡️ O'tkazib yuborish"
 BASE_URL = os.environ.get("WEBHOOK_URL") or os.environ.get("RENDER_EXTERNAL_URL")
 SECRET = hashlib.sha256(TOKEN.encode()).hexdigest()[:32]
 
-LEVELS = ["Beginner (A0)", "Elementary (A1)", "Pre-Intermediate (A2)",
-          "Intermediate (B1)", "Upper-Intermediate (B2)", "Advanced (C1+)"]
+BUDGETS = ["200$", "300$", "500$"]
 
 REGIONS = ["Toshkent shahri", "Toshkent viloyati", "Andijon", "Buxoro", "Farg'ona", "Jizzax", "Xorazm",
            "Namangan", "Navoiy", "Qashqadaryo", "Qoraqalpog'iston", "Samarqand", "Sirdaryo", "Surxondaryo"]
@@ -65,37 +64,6 @@ def clean_phone(text: str) -> str | None:
     return "+" + digits if 10 <= len(digits) <= 15 else None
 
 
-def clean_text(text: str) -> str:
-    return text[:200]
-
-
-def clean_email(text: str) -> str | None:
-    return text.lower() if re.fullmatch(r"[^@\s]+@[^@\s]+\.[a-zA-Z]{2,}", text) else None
-
-
-def clean_instagram(text: str) -> str | None:
-    name = re.sub(r"^(https?://)?(www\.)?instagram\.com/", "", text).split("?")[0].strip("@/ ")
-    return "@" + name if re.fullmatch(r"[A-Za-z0-9._]{1,30}", name) else None
-
-
-# Telefondan keyin so'raladigan ixtiyoriy savollar: (kalit, savol, tekshiruvchi, xato matni).
-# Kalit — lead dagi nom; FIELDY_KEYS orqali Fieldy maydoniga o'tadi.
-EXTRA = [
-    ("secondary_phone", "Qo'shimcha telefon raqamingiz bo'lsa yozing.", clean_phone,
-     "Raqam noto'g'ri. Masalan: +998 90 123 45 67"),
-    ("region", "Viloyatingiz?", clean_text, ""),
-    ("city", "Shahringiz?", clean_text, ""),
-    ("district", "Tumaningiz?", clean_text, ""),
-    ("address", "Manzilingiz (ko'cha, uy)?", clean_text, ""),
-    ("email", "Email manzilingiz?", clean_email, "Email noto'g'ri. Masalan: ali@gmail.com"),
-    ("instagram", "Instagram sahifangiz?", clean_instagram, "Instagram nomi noto'g'ri. Masalan: @ali_valiyev"),
-]
-
-FIELDY_KEYS = {"secondary_phone": "secondaryPhone", "region": "region", "city": "city", "district": "district",
-               "address": "address", "email": "email", "instagram": "instagram"}
-EXTRA_LABELS = {"secondary_phone": "📞", "region": "🗺", "city": "🏙", "district": "🏘", "address": "🏠",
-                "email": "✉️", "instagram": "📸"}
-
 dp = Dispatcher()
 
 
@@ -103,8 +71,8 @@ class Reg(StatesGroup):
     first_name = State()
     last_name = State()
     phone = State()
-    extra = State()  # EXTRA ro'yxatidagi ixtiyoriy savollar
-    level = State()
+    region = State()
+    budget = State()
     comment = State()
 
 
@@ -314,54 +282,31 @@ async def got_phone(message: Message, state: FSMContext):
     if not phone:
         await message.answer("Raqam noto'g'ri. Masalan: +998 90 123 45 67")
         return
-    await state.update_data(phone=phone, step=0)
-    await state.set_state(Reg.extra)
-    await ask_extra(message, 0)
-
-
-async def ask_extra(message: Message, i: int):
-    key, question, _, _ = EXTRA[i]
-    buttons = [KeyboardButton(text=r) for r in REGIONS] if key == "region" else []
-    rows = [buttons[j:j + 2] for j in range(0, len(buttons), 2)] + [[KeyboardButton(text=SKIP)]]
-    await message.answer(question, reply_markup=ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True))
-
-
-@dp.message(Reg.extra, F.text)
-async def got_extra(message: Message, state: FSMContext):
-    i = (await state.get_data())["step"]
-    key, _, check, error = EXTRA[i]
-    text = message.text.strip()
-    value = "" if text == SKIP else check(text)
-    if value is None:
-        await message.answer(error)
-        return
-    await state.update_data({key: value, "step": i + 1})
-    if i + 1 < len(EXTRA):
-        await ask_extra(message, i + 1)
-        return
-    await state.set_state(Reg.level)
-    kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=lv)] for lv in LEVELS],
+    await state.update_data(phone=phone)
+    await state.set_state(Reg.region)
+    buttons = [KeyboardButton(text=r) for r in REGIONS]
+    kb = ReplyKeyboardMarkup(keyboard=[buttons[j:j + 2] for j in range(0, len(buttons), 2)],
                              resize_keyboard=True, one_time_keyboard=True)
-    await message.answer("Ingliz tili darajangiz?", reply_markup=kb)
+    await message.answer("Qaysi shahar yoki viloyatdansiz? (tanlang yoki yozing)", reply_markup=kb)
 
 
-@dp.message(Reg.extra)
-async def wrong_extra(message: Message):
-    await message.answer(f"Iltimos, javobni yozing yoki «{SKIP}» ni bosing.")
+@dp.message(Reg.region, F.text)
+async def got_region(message: Message, state: FSMContext):
+    await state.update_data(region=message.text.strip()[:100])
+    await state.set_state(Reg.budget)
+    kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=b) for b in BUDGETS]],
+                             resize_keyboard=True, one_time_keyboard=True)
+    await message.answer("O'qish uchun qancha budjet ajrata olasiz? (tanlang yoki o'zingiz yozing)",
+                         reply_markup=kb)
 
 
-@dp.message(Reg.level, F.text.in_(LEVELS))
-async def got_level(message: Message, state: FSMContext):
-    await state.update_data(level=message.text)
+@dp.message(Reg.budget, F.text)
+async def got_budget(message: Message, state: FSMContext):
+    await state.update_data(budget=message.text.strip()[:100])
     await state.set_state(Reg.comment)
     kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=SKIP)]], resize_keyboard=True, one_time_keyboard=True)
     await message.answer("Qo'shimcha fikr yoki savolingiz bo'lsa yozing (masalan, qulay vaqt, maqsadingiz).\n"
                          "Bo'lmasa, pastdagi knopkani bosing.", reply_markup=kb)
-
-
-@dp.message(Reg.level)
-async def wrong_level(message: Message):
-    await message.answer("Iltimos, pastdagi knopkalardan birini tanlang.")
 
 
 @dp.message(Reg.comment, F.text)
@@ -374,14 +319,14 @@ async def got_comment(message: Message, state: FSMContext, bot: Bot):
         "first_name": data["first_name"],
         "last_name": data["last_name"],
         "phone": data["phone"],
-        "english_level": data["level"],
+        "region": data["region"],
+        "budget": data["budget"],
         "comment": comment,
         "source_post": data["source"],
         "source_link": post_link(data["source"]),
         "telegram_id": u.id,
         "telegram_username": u.username,
         "created_at": datetime.now(timezone.utc).isoformat(),
-        **{key: data.get(key, "") for key, *_ in EXTRA},
     }
     e = html.escape
     thanks = "✅ Rahmat! Arizangiz qabul qilindi, tez orada siz bilan bog'lanamiz."
@@ -393,8 +338,8 @@ async def got_comment(message: Message, state: FSMContext, bot: Bot):
     text = (f"🆕 <b>Yangi lid</b>\n\n"
             f"👤 {e(lead['first_name'])} {e(lead['last_name'])}\n"
             f"📱 {lead['phone']}\n"
-            + "".join(f"{EXTRA_LABELS[k]} {e(lead[k])}\n" for k, *_ in EXTRA if lead[k])
-            + f"🇬🇧 {e(lead['english_level'])}\n"
+            f"🗺 {e(lead['region'])}\n"
+            f"💰 Budjet: {e(lead['budget'])}\n"
             + (f"📝 {e(comment)}\n" if comment else "")
             + f"📌 Post: {e(src)}\n"
             f"💬 {'@' + u.username if u.username else ''} <a href=\"tg://user?id={u.id}\">profil</a>")
@@ -430,7 +375,7 @@ async def got_comment(message: Message, state: FSMContext, bot: Bot):
 
 def fieldy_payload(lead):
     """Fieldy kontakt formati. Fieldy'da maydoni yo'q narsalar notes ga yoziladi."""
-    notes = [f"Ingliz tili darajasi: {lead['english_level']}"]
+    notes = [f"Budjet: {lead['budget']}"]
     if lead["comment"]:
         notes.append(f"Izoh: {lead['comment']}")
     notes.append(f"Post: {lead['source_link'] or lead['source_post']}")
@@ -445,7 +390,7 @@ def fieldy_payload(lead):
         "notes": "\n".join(notes),
         "pipelineId": FIELDY_PIPELINE_ID,
         "stageId": FIELDY_STAGE_ID,
-        **{FIELDY_KEYS[k]: lead.get(k, "") for k in FIELDY_KEYS},
+        "region": lead["region"],
     }
     return {k: v for k, v in payload.items() if v}
 
