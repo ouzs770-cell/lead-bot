@@ -29,16 +29,21 @@ logging.basicConfig(level=logging.INFO)
 # .env faylidan sozlamalarni o'qish (kompyuterda). Render'da sozlamalar Environment bo'limidan olinadi
 ENV_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
 if os.path.exists(ENV_FILE):
-    for line in open(ENV_FILE, encoding="utf-8-sig"):
-        key, sep, value = line.strip().partition("=")
-        if sep and not key.startswith("#"):
-            os.environ.setdefault(key.strip(), value.strip().strip('"\''))
+    with open(ENV_FILE, encoding="utf-8-sig") as f:
+        for line in f:
+            key, sep, value = line.strip().partition("=")
+            if sep and not key.startswith("#"):
+                os.environ.setdefault(key.strip(), value.strip().strip('"\''))
 
 TOKEN = os.environ["BOT_TOKEN"]
 CHANNEL_ID = os.environ["CHANNEL_ID"]  # @kanal_nomi yoki -100...
 GROUP_ID = os.environ["GROUP_ID"]  # -100...
 ADMIN_IDS = {int(x) for x in os.environ.get("ADMIN_IDS", "").replace(" ", "").split(",") if x}
-CRM_WEBHOOK_URL = os.environ.get("CRM_WEBHOOK_URL")
+# Fieldy CRM: kontakt yaratish manzili va API kaliti (bo'sh bo'lsa CRM ga yuborilmaydi)
+FIELDY_API_URL = os.environ.get("FIELDY_API_URL") or os.environ.get("CRM_WEBHOOK_URL")
+FIELDY_API_KEY = os.environ.get("FIELDY_API_KEY", "")
+FIELDY_PIPELINE_ID = int(os.environ.get("FIELDY_PIPELINE_ID", "78"))
+FIELDY_STAGE_ID = int(os.environ.get("FIELDY_STAGE_ID", "725"))
 BUTTON_TEXT = os.environ.get("BUTTON_TEXT", "📝 Ro'yxatdan o'tish")
 CONTACT_PHONES = os.environ.get("CONTACT_PHONES", "")  # masalan: +998 90 123 45 67, +998 91 765 43 21
 SKIP = "➡️ O'tkazib yuborish"
@@ -338,13 +343,43 @@ async def got_comment(message: Message, state: FSMContext, bot: Bot):
             except Exception:
                 logging.exception("Adminga yuborib bo'lmadi")
 
-    if CRM_WEBHOOK_URL:
+    if FIELDY_API_URL:
+        headers = {"Authorization": f"Bearer {FIELDY_API_KEY}"} if FIELDY_API_KEY else {}
         try:
-            async with ClientSession(timeout=ClientTimeout(total=10)) as s:
-                async with s.post(CRM_WEBHOOK_URL, json=lead) as r:
-                    r.raise_for_status()
-        except Exception:
-            logging.exception("CRM ga yuborib bo'lmadi: %s", lead)
+            async with ClientSession(timeout=ClientTimeout(total=15)) as s:
+                async with s.post(FIELDY_API_URL, json=fieldy_payload(lead), headers=headers) as r:
+                    error = None if r.status < 300 else f"HTTP {r.status}: {(await r.text())[:200]}"
+        except Exception as err:
+            error = f"ulanib bo'lmadi ({type(err).__name__})"
+        if error:
+            logging.error("Fieldy ga yuborib bo'lmadi: %s | %s", error, lead)
+            for admin in ADMIN_IDS:
+                try:
+                    await bot.send_message(admin, f"⚠️ Fieldy CRM ga yuborilmadi: <code>{e(error)}</code>\n"
+                                                  f"Lid: {e(lead['first_name'])} {lead['phone']}")
+                except Exception:
+                    logging.exception("Adminga yuborib bo'lmadi")
+
+
+def fieldy_payload(lead):
+    """Fieldy kontakt formati. Fieldy'da maydoni yo'q narsalar notes ga yoziladi."""
+    notes = [f"Ingliz tili darajasi: {lead['english_level']}"]
+    if lead["comment"]:
+        notes.append(f"Izoh: {lead['comment']}")
+    notes.append(f"Post: {lead['source_link'] or lead['source_post']}")
+    notes.append(f"Telegram ID: {lead['telegram_id']}")
+    payload = {
+        "firstName": lead["first_name"],
+        "lastName": lead["last_name"],
+        "phone": lead["phone"],
+        "source": "TELEGRAM",
+        "sourceDetail": f"post_{lead['source_post']}" if lead["source_post"].isdigit() else lead["source_post"],
+        "telegram": f"@{lead['telegram_username']}" if lead["telegram_username"] else "",
+        "notes": "\n".join(notes),
+        "pipelineId": FIELDY_PIPELINE_ID,
+        "stageId": FIELDY_STAGE_ID,
+    }
+    return {k: v for k, v in payload.items() if v}
 
 
 # ---------- Ishga tushirish ----------
